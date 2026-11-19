@@ -13,8 +13,8 @@ services:
       - key: LLM_API_KEY
         sync: false
       - key: LLM_BASE_URL
-        value: https://api.openai.com/v1
+        sync: false
       - key: LLM_MODEL
-        value: gpt-4.1-mini
+        sync: false
       - key: DEMO_ACCESS_CODE
         sync: false
