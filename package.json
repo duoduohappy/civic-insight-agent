@@ -1,0 +1,8 @@
+{
+  "name": "civic-insight-ui-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {"test:ui": "node tests/frontend.mjs", "check": "node --check static/app.js"},
+  "devDependencies": {"happy-dom": "20.0.10"},
+  "engines": {"node": ">=20"}
+}
