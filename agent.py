@@ -4,6 +4,9 @@ import os
 import re
 import time
 import urllib.request
+import urllib.error
+from urllib.parse import urlsplit
+import socket
 from query import QueryError
 from data import DISTRICTS, CATEGORIES, USERS
 
@@ -27,19 +30,62 @@ result_index是本次成功query_data或search_documents的结果序号（从0�
 
 
 def enabled():
-    return bool(os.getenv('LLM_API_KEY'))
+    return bool(os.getenv('LLM_API_KEY','').strip())
+
+
+def safe_provider_error(value):
+    text = str(value)
+    key = os.getenv('LLM_API_KEY','').strip()
+    if key:
+        text = text.replace(key, '[密钥已隐藏]')
+    text = re.sub(r'(?i)(?:sk-|ghp_|github_pat_)[A-Za-z0-9_.-]+', '[密钥已隐藏]', text)
+    text = re.sub(r'(?i)Bearer\s+\S+', 'Bearer [已隐藏]', text)
+    return text[:500]
 
 
 def call_model(messages):
-    base = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1').rstrip('/')
+    base = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1').strip().rstrip('/')
+    model = os.getenv('LLM_MODEL', 'gpt-4.1-mini').strip()
+    if base.endswith('/chat/completions') or '/apps/anthropic' in base:
+        raise QueryError('LLM_BASE_URL请填写OpenAI兼容前缀，结尾应为/compatible-mode/v1或/v1，不要包含/chat/completions或/apps/anthropic。')
     if not base.startswith('https://') and not os.getenv('ALLOW_HTTP_LLM') == '1':
-        raise ValueError('模型服务地址必须使用 HTTPS')
-    body = {'model': os.getenv('LLM_MODEL', 'gpt-4.1-mini'), 'messages': messages,
+        raise QueryError('模型服务地址必须使用 HTTPS')
+    body = {'model': model, 'messages': messages,
             'tools': TOOLS, 'tool_choice': 'auto', 'temperature': .1, 'max_tokens': 2200}
+    # Qwen4 defaults to thinking. This synchronous UI uses non-thinking tool calls.
+    hostname = urlsplit(base).hostname or ''
+    if (hostname == 'aliyuncs.com' or hostname.endswith('.aliyuncs.com')) and model.startswith('qwen4-'):
+        body['enable_thinking'] = False
+        body['max_completion_tokens'] = body.pop('max_tokens')
     req = urllib.request.Request(base+'/chat/completions', json.dumps(body).encode(),
-          {'Authorization': 'Bearer '+os.environ['LLM_API_KEY'], 'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=40) as resp:
-        return json.load(resp)['choices'][0]['message']
+          {'Authorization': 'Bearer '+os.environ['LLM_API_KEY'].strip(), 'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            payload = json.load(resp)
+        message = payload['choices'][0]['message']
+        if not isinstance(message, dict):
+            raise ValueError('invalid message')
+        return message
+    except urllib.error.HTTPError as exc:
+        detail = ''
+        try:
+            payload = json.loads(exc.read(16000))
+            error = payload.get('error', payload)
+            if isinstance(error, dict):
+                detail = safe_provider_error(str(error.get('code',''))+' '+str(error.get('message',''))).strip()
+        except (ValueError, AttributeError):
+            pass
+        hints = {400:'请检查模型参数、模型名称及工具调用支持情况',401:'请检查完整API Key与Base URL地域是否匹配',
+                 403:'请检查模型访问权限、免费额度与用完即停状态',404:'请检查Base URL和模型Code',
+                 429:'模型服务限流或配额受限，请稍后重试'}
+        hint = hints.get(exc.code,'模型服务暂时异常，请稍后重试')
+        raise QueryError(f'模型服务返回 HTTP {exc.code}：{hint}。'+(' 服务信息：'+detail if detail else '')) from None
+    except (TimeoutError, socket.timeout):
+        raise QueryError('模型请求超过40秒未完成。请稍后重试，或检查模型推理模式与服务网络。') from None
+    except urllib.error.URLError:
+        raise QueryError('服务器无法连接模型地址。请检查Base URL、域名和服务器到百炼的网络连接。') from None
+    except (KeyError, IndexError, TypeError, ValueError):
+        raise QueryError('模型服务未返回标准Chat Completions响应，请核对接口地址及协议。') from None
 
 
 def validate_page(page, results):

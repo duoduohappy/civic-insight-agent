@@ -2,6 +2,8 @@ import json
 import os
 import tempfile
 import unittest
+import io
+import urllib.error
 from unittest.mock import patch
 
 _tmp = tempfile.TemporaryDirectory()
@@ -10,7 +12,7 @@ os.environ['SECRET_KEY'] = 'test-only-secret'
 os.environ.pop('DEMO_ACCESS_CODE', None)
 from data import DATA, USERS, AS_OF
 from query import Sandbox, QueryError, scoped_rows
-from agent import run_agent
+from agent import run_agent, call_model
 from app import app, limiter
 
 
@@ -103,6 +105,48 @@ class AgentTests(unittest.TestCase):
         with patch('agent.call_model',return_value={'role':'assistant','content':'invalid JSON'}):
             with self.assertRaises(QueryError):
                 run_agent(self.box,'分析',[])
+
+
+class ModelRequestTests(unittest.TestCase):
+    @patch.dict(os.environ, {'LLM_API_KEY':' test-secret ', 'LLM_BASE_URL':' https://ws-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/ ', 'LLM_MODEL':' qwen4-max '})
+    def test_qwen_request_and_whitespace(self):
+        response=io.BytesIO(json.dumps({'choices':[{'message':{'role':'assistant','content':'ok'}}]}).encode())
+        with patch('agent.urllib.request.urlopen',return_value=response) as urlopen:
+            self.assertEqual(call_model([])['content'],'ok')
+            request=urlopen.call_args.args[0]
+            body=json.loads(request.data)
+            self.assertEqual(request.full_url,'https://ws-example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions')
+            self.assertEqual(request.get_header('Authorization'),'Bearer test-secret')
+            self.assertFalse(body['enable_thinking'])
+            self.assertIn('max_completion_tokens',body)
+            self.assertNotIn('max_tokens',body)
+
+    @patch.dict(os.environ, {'LLM_API_KEY':'sk-test-secret-12345678', 'LLM_BASE_URL':'https://api.example.com/v1', 'LLM_MODEL':'example'})
+    def test_http_error_is_actionable_and_redacted(self):
+        body=io.BytesIO(json.dumps({'error':{'code':'InvalidApiKey','message':'Invalid token sk-test-secret-12345678'}}).encode())
+        error=urllib.error.HTTPError('https://api.example.com/v1/chat/completions',401,'Unauthorized',{},body)
+        with patch('agent.urllib.request.urlopen',side_effect=error):
+            with self.assertRaises(QueryError) as raised:
+                call_model([])
+        self.assertIn('HTTP 401',str(raised.exception))
+        self.assertIn('InvalidApiKey',str(raised.exception))
+        self.assertNotIn('sk-test-secret',str(raised.exception))
+
+    @patch.dict(os.environ, {'LLM_API_KEY':'test', 'LLM_BASE_URL':'https://api.example.com/v1/chat/completions'})
+    def test_wrong_base_url_rejected_before_request(self):
+        with patch('agent.urllib.request.urlopen') as urlopen:
+            with self.assertRaises(QueryError):
+                call_model([])
+            urlopen.assert_not_called()
+
+    @patch.dict(os.environ, {'LLM_API_KEY':'test', 'LLM_BASE_URL':'https://api.example.com/v1'})
+    def test_network_error_and_invalid_response(self):
+        with patch('agent.urllib.request.urlopen',side_effect=urllib.error.URLError('offline')):
+            with self.assertRaisesRegex(QueryError,'无法连接'):
+                call_model([])
+        with patch('agent.urllib.request.urlopen',return_value=io.BytesIO(b'{"unexpected":true}')):
+            with self.assertRaisesRegex(QueryError,'标准Chat Completions'):
+                call_model([])
 
 
 class ApiTests(unittest.TestCase):
