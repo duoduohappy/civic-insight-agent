@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 import json
 import logging
@@ -9,13 +10,14 @@ import time
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from pathlib import Path
-from flask import Flask, jsonify, request, session, send_from_directory
+from flask import Flask, jsonify, request, session, Response
 from data import DATA, USERS, AS_OF
 from query import Sandbox, METRICS, scoped_rows, QueryError
 from agent import run_agent, enabled
 import dispatch
 
 ROOT = Path(__file__).parent
+APP_VERSION=hashlib.sha256(b''.join((ROOT/p).read_bytes() for p in ('app.py','query.py','static/app.js','static/dispatch.js'))).hexdigest()[:12]
 app = Flask(__name__, static_folder='static')
 app.config.update(SECRET_KEY=os.getenv('SECRET_KEY') or secrets.token_hex(32), MAX_CONTENT_LENGTH=24000,
     SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=os.getenv('RENDER') == 'true')
@@ -80,6 +82,7 @@ def protect():
 
 @app.after_request
 def headers(response):
+    response.headers['X-App-Version']=APP_VERSION
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'same-origin'
     response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
@@ -90,7 +93,10 @@ def headers(response):
 
 @app.get('/')
 def index():
-    return send_from_directory(app.static_folder,'index.html')
+    html=(ROOT/'static/index.html').read_text(encoding='utf-8')
+    for path in ('app.js','dispatch.js','style.css','dispatch.css'):
+        html=html.replace('/static/'+path,'/static/'+path+'?v='+APP_VERSION)
+    return Response(html,mimetype='text/html',headers={'Cache-Control':'no-store'})
 
 
 @app.get('/healthz')
@@ -104,7 +110,7 @@ def bootstrap():
         session['csrf'] = secrets.token_hex(24)
     return jsonify(csrf=session['csrf'], user=session.get('user'), users=USERS, mode='llm' if enabled() else 'demo',
                    snapshot=str(AS_OF), counts={k:len(v) for k,v in DATA.items()},
-                   password_required=bool(os.getenv('DEMO_ACCESS_CODE')))
+                   password_required=bool(os.getenv('DEMO_ACCESS_CODE')),version=APP_VERSION)
 
 
 @app.post('/api/login')

@@ -165,6 +165,13 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(r.status_code,200)
         self.csrf=r.json['csrf']
 
+    def test_html_version_and_cache_headers(self):
+        page=self.client.get('/')
+        self.assertEqual(page.headers['Cache-Control'],'no-store')
+        self.assertIn(b'/static/app.js?v=',page.data)
+        boot=self.client.get('/api/bootstrap')
+        self.assertEqual(boot.headers['X-App-Version'],boot.json['version'])
+
     def test_auth_csrf(self):
         self.assertEqual(self.client.get('/api/overview').status_code,401)
         self.assertEqual(self.client.post('/api/login',json={'user':'city'}).status_code,403)
