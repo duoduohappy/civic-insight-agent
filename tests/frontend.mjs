@@ -29,7 +29,7 @@ assert.ok($('#results .data-table'));
 assert.equal($('#export-button').disabled,false);
 $('[data-tab="catalog"]').click();
 assert.equal($('#catalog-view').classList.contains('hidden'),false);
-assert.equal(window.document.querySelectorAll('.catalog-card').length,8);
+assert.equal(window.document.querySelectorAll('.catalog-card').length,10);
 $('#top-switch-role').click();
 [...window.document.querySelectorAll('.role-option')].find(b=>b.textContent.includes('区级管理者')).click();
 await until(()=>$('#scope-label').textContent==='东城区工单'&&!$('#role-dialog').open&&$('#messages .welcome'));

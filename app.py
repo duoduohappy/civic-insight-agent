@@ -13,6 +13,7 @@ from flask import Flask, jsonify, request, session, send_from_directory
 from data import DATA, USERS, AS_OF
 from query import Sandbox, METRICS, scoped_rows, QueryError
 from agent import run_agent, enabled
+import dispatch
 
 ROOT = Path(__file__).parent
 app = Flask(__name__, static_folder='static')
@@ -36,9 +37,16 @@ def state_db():
 with state_db() as db:
     db.executescript('''CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, principal TEXT, messages TEXT, updated REAL);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, principal TEXT, at TEXT, question TEXT, status TEXT, details TEXT);''')
+    dispatch.initialize(db)
 limiter = defaultdict(deque)
 lock = threading.Lock()
 active = set()
+
+
+def make_sandbox():
+    with state_db() as db:
+        cases, events = dispatch.snapshot(db,session['user'])
+    return Sandbox(session['user'],{'dispatch_cases':cases,'dispatch_events':events})
 
 
 def limited(key, maximum, seconds=60):
@@ -118,7 +126,7 @@ def login():
 
 @app.get('/api/overview')
 def overview():
-    box = Sandbox(session['user'])
+    box = make_sandbox()
     try:
         result = box.execute("SELECT count(*) AS total,sum(CASE WHEN status='已办结' THEN 1 ELSE 0 END) AS closed,sum(overdue) AS overdue,round(avg(handling_hours),1) AS avg_hours FROM tickets")
         categories = box.execute('SELECT category,count(*) AS total FROM tickets GROUP BY category ORDER BY total DESC')
@@ -170,7 +178,7 @@ def chat():
     box = None
     status, detail = 'error', ''
     try:
-        box = Sandbox(session['user'])
+        box = make_sandbox()
         previous = read_history()
         result = run_agent(box,q.strip(),previous)
         result['scope'] = USERS[session['user']]['scope']
@@ -197,6 +205,87 @@ def chat():
             db.execute('INSERT INTO audit(principal,at,question,status,details) VALUES (?,?,?,?,?)',
                        (session['user'],time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),q,status,detail))
             db.execute('DELETE FROM audit WHERE id < (SELECT coalesce(max(id),0)-10000 FROM audit)')
+
+
+@app.errorhandler(dispatch.DispatchError)
+def dispatch_error(exc):
+    return jsonify(error=str(exc)),exc.status
+
+
+def dispatch_body():
+    body=request.get_json()
+    if not isinstance(body,dict):
+        raise dispatch.DispatchError('请求格式必须是JSON对象。')
+    return body
+
+
+@app.get('/api/dispatch')
+def dispatch_list():
+    with state_db() as db:
+        rows,events=dispatch.snapshot(db,session['user'])
+    return jsonify(rows=rows[:100],total=len(rows),event_count=len(events),can_dispatch=session['user'] in ('city','district'),
+        districts=[USERS[session['user']]['district']] if USERS[session['user']]['district'] else dispatch.DISTRICTS,
+        departments=[{'id':i+1,'name':name} for i,name in enumerate(dispatch.DEPTS)],
+        model_available=enabled(),scope=USERS[session['user']]['scope'])
+
+
+@app.get('/api/dispatch/<cid>')
+def dispatch_detail(cid):
+    with state_db() as db:
+        row=dispatch.get_case(db,session['user'],cid)
+        events=[dict(e) for e in db.execute('SELECT * FROM dispatch_events WHERE case_id=? ORDER BY id',(cid,))]
+    return jsonify(case=row,events=events)
+
+
+@app.post('/api/dispatch/create')
+def dispatch_create():
+    body=dispatch_body()
+    if limited('intake:'+session['user'],20):
+        return jsonify(error='录入过于频繁，请稍后重试。'),429
+    with state_db() as db:
+        case=dispatch.create_case(db,session['user'],body)
+    return jsonify(case=case)
+
+
+@app.post('/api/dispatch/recommend')
+def dispatch_recommend():
+    body=dispatch_body()
+    cid=body.get('case_id')
+    if not isinstance(cid,str) or type(body.get('use_model',False)) is not bool or type(body.get('automatic',False)) is not bool:
+        raise dispatch.DispatchError('工单编号或派单参数格式错误。')
+    if limited('recommend:'+session['sid'],10):
+        return jsonify(error='推荐过于频繁，请稍后重试。'),429
+    with state_db() as db:
+        case=dispatch.get_case(db,session['user'],cid,write=True)
+        if case['status']=='已派单':
+            raise dispatch.DispatchError('该工单已派单。',409)
+    try:
+        recommendation=dispatch.recommend(case,body.get('use_model',False))
+    except QueryError as exc:
+        return jsonify(error=str(exc)),422
+    with state_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        latest=dispatch.get_case(db,session['user'],cid,write=True)
+        if latest['version']!=case['version'] or latest['status']=='已派单':
+            raise dispatch.DispatchError('工单已更新，请刷新后重试。',409)
+        proposal=dispatch.save_proposal(db,session['user'],case,recommendation)
+        if body.get('automatic') and recommendation['auto_eligible']:
+            case=dispatch.execute(db,session['user'],cid,proposal['proposal_id'],automatic=True)
+        else:
+            case=dispatch.get_case(db,session['user'],cid)
+    return jsonify(case=case,proposal=proposal)
+
+
+@app.post('/api/dispatch/execute')
+def dispatch_execute():
+    body=dispatch_body()
+    if not isinstance(body.get('case_id'),str) or not isinstance(body.get('proposal_id'),str):
+        raise dispatch.DispatchError('缺少工单或建议编号。')
+    with state_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        case=dispatch.execute(db,session['user'],body['case_id'],body['proposal_id'],
+            manual_department=body.get('department_id'),reason=body.get('reason',''))
+    return jsonify(case=case)
 
 
 if __name__ == '__main__':

@@ -1,12 +1,12 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#132a35"><title>知诉 · 12345 智能问数工作台</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#132a35"><title>知诉 · 12345 智能问数工作台</title><link rel="stylesheet" href="/static/style.css"><link rel="stylesheet" href="/static/dispatch.css"><script src="/static/app.js" defer></script><script src="/static/dispatch.js" defer></script></head>
 <body>
 <aside class="sidebar">
   <a class="brand" href="/" aria-label="知诉首页"><span class="brand-mark">知</span><span>知诉 <small>CIVIC INSIGHT</small></span></a>
   <div class="workspace"><span class="workspace-icon">▦</span><div>12345 城市服务中心<small>智能分析工作空间</small></div><span class="tiny-tag">DEMO</span></div>
   <p class="nav-label">工作台</p>
-  <nav><button class="nav-item active" data-tab="chat"><span>◈</span> 智能问数 <span class="nav-pill">Agent</span></button><button class="nav-item" data-tab="catalog"><span>▤</span> 数据目录</button><button class="nav-item" data-tab="audit"><span>◷</span> 查询审计</button></nav>
+  <nav><button class="nav-item" data-tab="dispatch"><span>▣</span> 智能派单</button><button class="nav-item active" data-tab="chat"><span>◈</span> 智能问数 <span class="nav-pill">Agent</span></button><button class="nav-item" data-tab="catalog"><span>▤</span> 数据目录</button><button class="nav-item" data-tab="audit"><span>◷</span> 查询审计</button></nav>
   <div class="side-divider"></div><p class="nav-label">分析灵感</p>
   <button class="side-prompt" data-question="本月工单概览，按区域对比">区域运行概览</button>
   <button class="side-prompt" data-question="比较各部门办理时长和转派情况">部门办理效能</button>
@@ -15,8 +15,14 @@
 </aside>
 <div class="shell">
 <header class="topbar"><div class="breadcrumb">工作台 <span>/</span> <strong id="page-label">智能问数</strong></div><div class="top-actions"><span class="data-label">合成数据 · 2026.11.19 快照</span><button class="quiet-button" id="top-switch-role">切换身份</button><button class="quiet-button" id="help-button">演示说明</button></div></header>
-<nav class="mobile-nav"><button data-tab="chat">智能问数</button><button data-tab="catalog">数据目录</button><button data-tab="audit">查询审计</button></nav>
+<nav class="mobile-nav"><button data-tab="dispatch">智能派单</button><button data-tab="chat">智能问数</button><button data-tab="catalog">数据目录</button><button data-tab="audit">查询审计</button></nav>
 <main>
+<section id="dispatch-view" class="view hidden">
+<div class="page-heading"><div><div class="eyebrow">INTELLIGENT DISPATCH</div><h1>让每一件诉求，找到承办部门<span class="heading-dot">.</span></h1><p>职责匹配 · 模型辅助复核 · 权限内执行 · 全程留痕</p></div><button id="dispatch-refresh" class="quiet-button">刷新工单</button></div>
+<div class="permission-banner">派单仅写入本演示的受理台账，不连接真实12345系统。单一职责明确的诉求可自动派发，多部门或信息不足的诉求转人工复核。时间以UTC记录。</div>
+<div id="dispatch-message" role="status" class="dispatch-message"></div>
+<div class="dispatch-grid"><div><section class="panel dispatch-intake"><h2>受理新诉求</h2><form id="dispatch-form"><label>诉求标题<input id="dispatch-subject" required minlength="2" maxlength="100" placeholder="例如：夜间施工噪声扰民"></label><label>所属区域<select id="dispatch-district"></select></label><label>诉求内容<textarea id="dispatch-content" required minlength="5" maxlength="3000" rows="4" placeholder="描述发生地点、具体问题和希望解决的事项。请只输入模拟数据。"></textarea></label><button id="dispatch-create" type="submit" class="dispatch-primary">录入待派单工单</button></form></section><section class="panel dispatch-queue"><div class="panel-heading"><h2>受理台账</h2><span id="dispatch-count"></span></div><div id="dispatch-list"></div></section></div><section id="dispatch-detail"></section></div>
+</section>
 <section id="chat-view" class="view">
   <div class="page-heading"><div><div class="eyebrow">CONVERSATIONAL ANALYTICS</div><h1>让城市诉求，成为决策线索<span class="heading-dot">.</span></h1><p>用自然语言探索工单，连接数据与业务。</p></div><span id="mode-badge" class="mode-badge">规则演示模式</span></div>
   <div class="permission-banner"><span class="shield">◇</span><span>当前数据范围：<strong id="scope-label">尚未选择身份</strong></span><span class="permission-extra">行级隔离 · 敏感字段不可见 · 只读查询</span><button id="permission-button">查看权限</button></div>

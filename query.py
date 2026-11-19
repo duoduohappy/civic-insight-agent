@@ -13,6 +13,8 @@ DDL = {
     'knowledge_docs': 'id TEXT, title TEXT, doc_type TEXT, district TEXT, department_id INTEGER, body TEXT, effective_date TEXT',
     'daily_context': 'day TEXT, district TEXT, rainfall_mm REAL, is_weekend INTEGER',
     'district_profiles': 'district TEXT, population_10k INTEGER, street_count INTEGER, area_km2 INTEGER',
+    'dispatch_cases': 'id TEXT, subject TEXT, content TEXT, district TEXT, status TEXT, department_id INTEGER, category TEXT, assignee TEXT, created_at TEXT, due_at TEXT, version INTEGER',
+    'dispatch_events': 'id INTEGER, case_id TEXT, action TEXT, actor TEXT, department_id INTEGER, detail TEXT, occurred_at TEXT',
 }
 METRICS = {'办结率': '当前范围已办结数 / 当前范围工单总数；按受理时间归属月份',
            '逾期率': 'overdue=1 的工单数 / 当前范围工单总数，含逾期办结与在办超期',
@@ -33,7 +35,7 @@ class QueryError(ValueError):
 
 
 class Sandbox:
-    def __init__(self, user_id):
+    def __init__(self, user_id, extra=None):
         self.db = sqlite3.connect(':memory:')
         self.db.row_factory = sqlite3.Row
         self.user_id = user_id
@@ -47,6 +49,15 @@ class Sandbox:
                    'knowledge_docs': [d for d in DATA['knowledge_docs'] if (not d[3] or d[3] in districts) and d[4] in departments],
                    'daily_context': [d for d in DATA['daily_context'] if d[1] in districts],
                    'district_profiles': [d for d in DATA['district_profiles'] if d[0] in districts]}
+        extra = extra or {}
+        u = USERS[user_id]
+        pending = [row for row in extra.get('dispatch_cases',[]) if
+                   (not u['district'] or row['district']==u['district']) and
+                   (not u['department_id'] or row['department_id']==u['department_id']) and
+                   (not u['assignee'] or row['assignee']==u['assignee'])]
+        pending_ids = {r['id'] for r in pending}
+        visible['dispatch_cases'] = [tuple(row[k.split()[0]] for k in DDL['dispatch_cases'].split(',')) for row in pending]
+        visible['dispatch_events'] = [tuple(row[k.split()[0]] for k in DDL['dispatch_events'].split(',')) for row in extra.get('dispatch_events',[]) if row['case_id'] in pending_ids]
         self.counts = {k:len(v) for k,v in visible.items()}
         for table, ddl in DDL.items():
             self.db.execute(f'CREATE TABLE {table} ({ddl})')
@@ -74,7 +85,9 @@ class Sandbox:
         return {'tables': DDL, 'metrics': METRICS, 'scope': USERS[self.user_id]['scope'],
                 'relations': ['tickets.department_id=departments.id', 'events.ticket_id=tickets.id', 'feedback.ticket_id=tickets.id',
                               'service_targets.department_id=departments.id', 'tickets.district=district_profiles.district',
-                              'date(tickets.created_at)=daily_context.day AND tickets.district=daily_context.district'],
+                              'date(tickets.created_at)=daily_context.day AND tickets.district=daily_context.district',
+                              'dispatch_events.case_id=dispatch_cases.id', 'dispatch_cases.department_id=departments.id',
+                              'dispatch_cases为实时新受理派单数据，tickets为固定历史快照；两者不要混作同一统计口径。派单操作须使用独立工作台，SQL工具只读。'],
                 'privacy': '不提供姓名、手机号、详细住址等市民身份字段；禁止推断或补全。仅有授权行，无其他隐藏原始表。'}
 
     def execute(self, sql):

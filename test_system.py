@@ -13,7 +13,8 @@ os.environ.pop('DEMO_ACCESS_CODE', None)
 from data import DATA, USERS, AS_OF
 from query import Sandbox, QueryError, scoped_rows
 from agent import run_agent, call_model
-from app import app, limiter
+from app import app, limiter, state_db
+import dispatch
 
 
 class PermissionTests(unittest.TestCase):
@@ -189,6 +190,94 @@ class ApiTests(unittest.TestCase):
     def test_access_code(self):
         self.assertEqual(self.post('/api/login',{'user':'city'}).status_code,403)
         self.assertEqual(self.post('/api/login',{'user':'city','code':'test-code'}).status_code,200)
+
+
+class DispatchTests(unittest.TestCase):
+    def setUp(self):
+        app.config['TESTING']=True
+        limiter.clear()
+        self.client=app.test_client()
+        self.csrf=self.client.get('/api/bootstrap').json['csrf']
+        with state_db() as db:
+            db.executescript('DELETE FROM dispatch_events; DELETE FROM dispatch_proposals; DELETE FROM dispatch_cases;')
+            dispatch.initialize(db)
+        self.login('city')
+
+    def post(self,path,body):
+        return self.client.post(path,json=body,headers={'X-CSRF-Token':self.csrf})
+
+    def login(self,user):
+        r=self.post('/api/login',{'user':user})
+        self.csrf=r.json['csrf']
+
+    def recommend(self,cid='PD202600001',**kwargs):
+        return self.post('/api/dispatch/recommend',{'case_id':cid,**kwargs})
+
+    def test_automatic_dispatch_and_duplicate_guard(self):
+        result=self.recommend(automatic=True)
+        self.assertEqual(result.status_code,200)
+        self.assertEqual(result.json['case']['status'],'已派单')
+        self.assertEqual(result.json['case']['department_id'],1)
+        self.assertTrue(result.json['case']['due_at'])
+        self.assertEqual(self.recommend(automatic=True).status_code,409)
+        events=self.client.get('/api/dispatch/PD202600001').json['events']
+        self.assertEqual(sum(e['action']=='派单' for e in events),1)
+
+    def test_ambiguous_requires_manual_review(self):
+        r=self.recommend('PD202600007',automatic=True).json
+        self.assertEqual(r['case']['status'],'待复核')
+        self.assertFalse(r['proposal']['auto_eligible'])
+        body={'case_id':'PD202600007','proposal_id':r['proposal']['proposal_id']}
+        self.assertEqual(self.post('/api/dispatch/execute',body).status_code,409)
+        self.assertEqual(self.post('/api/dispatch/execute',body|{'department_id':1,'reason':'短'}).status_code,400)
+        good=self.post('/api/dispatch/execute',body|{'department_id':1,'reason':'经人工核实，以占道经营为牵头事项处理'})
+        self.assertEqual(good.status_code,200)
+        self.assertEqual(good.json['case']['department_id'],1)
+
+    def test_unknown_and_model_disagreement(self):
+        r=self.recommend('PD202600008',automatic=True)
+        self.assertEqual(r.json['case']['status'],'待复核')
+        with patch.dict(os.environ,{'LLM_API_KEY':'placeholder'}),patch('dispatch.call_model',return_value={'content':'{"department_id":3,"reason":"模拟不同建议"}'}) as model:
+            r=self.recommend(use_model=True,automatic=True)
+            self.assertEqual(r.json['case']['status'],'待复核')
+            self.assertIsNone(r.json['proposal']['department_id'])
+            self.assertEqual(model.call_args.kwargs['tools'],[])
+
+    def test_district_and_operation_permissions(self):
+        self.login('district')
+        self.assertEqual(self.recommend('PD202600002').status_code,404)
+        self.assertEqual(self.post('/api/dispatch/create',{'subject':'诉求测试','content':'垃圾清运需要处理','district':'西城区'}).status_code,403)
+        self.assertTrue(all(r['district']=='东城区' for r in self.client.get('/api/dispatch').json['rows']))
+        self.login('department')
+        self.assertFalse(self.client.get('/api/dispatch').json['can_dispatch'])
+        self.assertEqual(self.post('/api/dispatch/create',{'subject':'测试','content':'垃圾清运测试诉求','district':'东城区','user':'city'}).status_code,403)
+
+    def test_new_intake_and_query_visibility(self):
+        r=self.post('/api/dispatch/create',{'subject':'道路垃圾清运','content':'示范路垃圾未清运，请处理','district':'东城区'})
+        self.assertEqual(r.status_code,200)
+        cid=r.json['case']['id']
+        self.assertEqual(self.recommend(cid,automatic=True).json['case']['status'],'已派单')
+        with state_db() as db:
+            cases,events=dispatch.snapshot(db,'city')
+        extra={'dispatch_cases':cases,'dispatch_events':events}
+        box=Sandbox('department',extra)
+        self.assertEqual(box.execute(f"SELECT status FROM dispatch_cases WHERE id='{cid}'")['rows'][0]['status'],'已派单')
+        self.assertTrue(box.execute('SELECT * FROM dispatch_events')['rows'])
+        box.close()
+        box=Sandbox('staff',extra)
+        self.assertFalse(box.execute('SELECT * FROM dispatch_cases')['rows'])
+        self.assertFalse(box.execute('SELECT * FROM dispatch_events')['rows'])
+        box.close()
+
+    def test_proposal_bound_to_identity_and_expiry(self):
+        p=self.recommend().json['proposal']['proposal_id']
+        self.login('district')
+        body={'case_id':'PD202600001','proposal_id':p}
+        self.assertEqual(self.post('/api/dispatch/execute',body).status_code,409)
+        self.login('city')
+        with state_db() as db:
+            db.execute("UPDATE dispatch_proposals SET created_at='2020-01-01T00:00:00+00:00' WHERE id=?",(p,))
+        self.assertEqual(self.post('/api/dispatch/execute',body).status_code,409)
 
 
 if __name__ == '__main__':

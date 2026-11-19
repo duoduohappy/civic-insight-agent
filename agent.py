@@ -43,7 +43,7 @@ def safe_provider_error(value):
     return text[:500]
 
 
-def call_model(messages):
+def call_model(messages, tools=None):
     base = os.getenv('LLM_BASE_URL', 'https://api.openai.com/v1').strip().rstrip('/')
     model = os.getenv('LLM_MODEL', 'gpt-4.1-mini').strip()
     if base.endswith('/chat/completions') or '/apps/anthropic' in base:
@@ -52,6 +52,12 @@ def call_model(messages):
         raise QueryError('模型服务地址必须使用 HTTPS')
     body = {'model': model, 'messages': messages,
             'tools': TOOLS, 'tool_choice': 'auto', 'temperature': .1, 'max_tokens': 2200}
+    if tools is not None:
+        if tools:
+            body['tools'] = tools
+        else:
+            body.pop('tools')
+            body.pop('tool_choice')
     # Qwen4 defaults to thinking. This synchronous UI uses non-thinking tool calls.
     hostname = urlsplit(base).hostname or ''
     if (hostname == 'aliyuncs.com' or hostname.endswith('.aliyuncs.com')) and model.startswith('qwen4-'):
@@ -243,7 +249,7 @@ def run_demo(sandbox, question, history):
         if components[i]['type'] in ['bar','line']:
             components.append({'type':'table','title':'数据明细与对比','result_index':i})
             break
-    trace = [{'tool':'inspect_schema','status':'ok','detail':'读取8类授权数据与业务口径'}]+[
+    trace = [{'tool':'inspect_schema','status':'ok','detail':'读取授权数据结构与业务口径'}]+[
         {'tool':'query_data','status':'ok','detail':r['sql'],'rows':r['returned_rows']} for r in results]
     scope_note = '；'.join(where) or '全部演示时间'
     return {'title':title,'summary':note+' 本次范围：'+USERS[sandbox.user_id]['scope']+'；'+scope_note+'。图表为查询结果，相关性不代表因果。',
