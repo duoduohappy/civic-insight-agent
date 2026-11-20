@@ -123,7 +123,7 @@ def login():
     supplied = body.get('code','') if isinstance(body,dict) else ''
     if code and (not isinstance(supplied,str) or not hmac.compare_digest(code,supplied)):
         return jsonify(error='演示访问码不正确。'), 403
-    if user not in USERS:
+    if not isinstance(user,str) or user not in USERS:
         return jsonify(error='未知身份。'), 400
     session.clear()
     session.update(user=user, csrf=secrets.token_hex(24), sid=secrets.token_hex(24))
@@ -240,7 +240,12 @@ def dispatch_detail(cid):
     with state_db() as db:
         row=dispatch.get_case(db,session['user'],cid)
         events=[dict(e) for e in db.execute('SELECT * FROM dispatch_events WHERE case_id=? ORDER BY id',(cid,))]
-    return jsonify(case=row,events=events)
+        p=db.execute('SELECT * FROM dispatch_proposals WHERE case_id=? AND principal=? AND version=? ORDER BY created_at DESC LIMIT 1',
+                     (cid,session['user'],row['version'])).fetchone()
+        proposal=None
+        if p and row['status']!='已派单' and dispatch.datetime.now(dispatch.timezone.utc)-dispatch.datetime.fromisoformat(p['created_at'])<=dispatch.timedelta(minutes=30):
+            proposal=dict(json.loads(p['payload']),proposal_id=p['id'],version=p['version'])
+    return jsonify(case=row,events=events,proposal=proposal)
 
 
 @app.post('/api/dispatch/create')

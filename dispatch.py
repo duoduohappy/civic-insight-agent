@@ -98,6 +98,9 @@ def recommend(case, use_model=False):
         reasons=['未命中明确职责线索，需要补充地点、对象及具体问题。']
     elif len(matches)>1:
         reasons.append('涉及多个部门，系统不自动决定牵头部门，需人工协调。')
+    if any(word in text for word in ('不是','不涉及','无需','已解决','不需要')):
+        target=None
+        reasons.append('包含否定或已解决表述，关键词不能确定当前诉求，需人工复核。')
     model_note=None
     if use_model:
         if not enabled():
@@ -131,13 +134,16 @@ def recommend(case, use_model=False):
 
 def save_proposal(db,user,case,recommendation):
     pid=secrets.token_hex(16)
-    db.execute('INSERT INTO dispatch_proposals VALUES (?,?,?,?,?,?)',
-               (pid,case['id'],case['version'],user,json.dumps(recommendation,ensure_ascii=False),now()))
-    db.execute('UPDATE dispatch_cases SET status=? WHERE id=? AND version=?',
+    version=case['version']+1
+    updated=db.execute("UPDATE dispatch_cases SET status=?,version=version+1 WHERE id=? AND version=? AND status!='已派单'",
                ('待确认' if recommendation['department_id'] else '待复核',case['id'],case['version']))
+    if updated.rowcount!=1:
+        raise DispatchError('工单已更新，请重新生成建议。',409)
+    db.execute('INSERT INTO dispatch_proposals VALUES (?,?,?,?,?,?)',
+               (pid,case['id'],version,user,json.dumps(recommendation,ensure_ascii=False),now()))
     db.execute('INSERT INTO dispatch_events(case_id,action,actor,detail,occurred_at) VALUES (?,?,?,?,?)',
                (case['id'],'生成建议',USERS[user]['name'],json.dumps(recommendation,ensure_ascii=False),now()))
-    return dict(recommendation,proposal_id=pid,version=case['version'])
+    return dict(recommendation,proposal_id=pid,version=version)
 
 
 def execute(db,user,cid,pid,manual_department=None,reason='',automatic=False):

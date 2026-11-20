@@ -276,6 +276,27 @@ class DispatchTests(unittest.TestCase):
         self.assertFalse(box.execute('SELECT * FROM dispatch_events')['rows'])
         box.close()
 
+    def test_superseded_proposal_and_refresh_recovery(self):
+        old=self.recommend().json['proposal']
+        new=self.recommend().json['proposal']
+        self.assertGreater(new['version'],old['version'])
+        detail=self.client.get('/api/dispatch/PD202600001').json
+        self.assertEqual(detail['proposal']['proposal_id'],new['proposal_id'])
+        body={'case_id':'PD202600001','proposal_id':old['proposal_id']}
+        self.assertEqual(self.post('/api/dispatch/execute',body).status_code,409)
+        body['proposal_id']=new['proposal_id']
+        self.assertEqual(self.post('/api/dispatch/execute',body).status_code,200)
+        self.assertIsNone(self.client.get('/api/dispatch/PD202600001').json['proposal'])
+
+    def test_negated_issue_is_not_automatically_assigned(self):
+        r=self.post('/api/dispatch/create',{'subject':'噪声已解决','content':'噪声已解决，不需要继续派发','district':'东城区'})
+        result=self.recommend(r.json['case']['id'],automatic=True)
+        self.assertEqual(result.json['case']['status'],'待复核')
+        self.assertIsNone(result.json['case']['department_id'])
+
+    def test_malformed_role_returns_client_error(self):
+        self.assertEqual(self.post('/api/login',{'user':['city']}).status_code,400)
+
     def test_proposal_bound_to_identity_and_expiry(self):
         p=self.recommend().json['proposal']['proposal_id']
         self.login('district')
